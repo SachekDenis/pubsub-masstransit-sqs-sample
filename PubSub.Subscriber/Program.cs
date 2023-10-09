@@ -1,66 +1,72 @@
 ﻿using System;
 using System.Threading.Tasks;
-using GreenPipes;
+using Amazon.Runtime.CredentialManagement;
 using MassTransit;
-using MassTransit.AmazonSqsTransport.Configuration;
+using Microsoft.Extensions.Hosting;
 using PubSub.Messages;
+using Serilog;
 
 namespace PubSub.Subscriber
 {
     class Program
     {
-        static void Main()
+        static IHost ConfigureHost() {
+            Log.Logger = new LoggerConfiguration()
+                .WriteTo.Console()
+                .CreateLogger();
+
+            var host = Host.CreateDefaultBuilder()
+                .ConfigureServices((context, services) => {
+                    services.AddMassTransit(x =>
+                        {
+                            x.UsingAmazonSqs((_, config) =>
+                            {
+                                    const string region = "eu-west-1";
+                                    const string profileName = "profileName";
+                                    const string queueName = "queueName";
+                                    const string keyString = "keyString";
+
+                                    var profileChain = new CredentialProfileStoreChain();
+                                    if (!profileChain.TryGetAWSCredentials(profileName, out var awsCredentials))
+                                    {
+                                        throw new InvalidOperationException("Could not retrieve AWS profile.");
+                                    }
+
+                                    config.Host(region, h =>
+                                    {
+                                        h.Credentials(awsCredentials);
+                                    });
+
+                                    var key = Convert.FromBase64String(keyString);
+                                    config.UseEncryption(key);
+
+                                    config.ReceiveEndpoint(queueName, e =>
+                                    {
+                                        e.UseMessageRetry(r => r.Immediate(5));
+
+                                        e.Consumer(() => new Handler());
+                                    });
+                                });
+                        });
+                })
+                .UseSerilog()
+                .Build()
+
+            return host;
+        }
+
+        static async Task Main()
         {
-            var bus = Bus.Factory.CreateUsingAmazonSqs(x =>
-            {
-                const string region = "<REPLACE WITH THE AWS DESIRED REGION>";
-                const string accessKey = "<REPLACE WITH YOUR AWS ACCESS-KEY>";
-                const string secretKey = "<REPLACE WITH YOUR AWS SECRET KEY>";
-
-                x.Host(region, h =>
-                {
-                    h.AccessKey(accessKey);
-                    h.SecretKey(secretKey);
-                });
-
-
-                x.ReceiveEndpoint("string-message-input-queue", e =>
-                {
-
-                    e.UseMessageRetry(r => r.Immediate(5));
-
-                    e.Subscribe("string-message-topic", callback =>{});
-
-                    e.Consumer(() => new Handler());
-                });
-
-                x.ReceiveEndpoint("datetime-message-input-queue", e =>
-                {
-                    e.Subscribe("datetime-message-topic", callback =>{});
-
-                    e.Consumer(() => new Handler());
-                });
-            });
-
-            bus.StartAsync().Wait();
-
-            Console.WriteLine("Listening to messages...");
-            Console.WriteLine("Press enter to quit");
-            Console.ReadLine();
+            var host = ConfigureHost();
+            await host.RunAsync();
         }
     }
 
-    class Handler : IConsumer<StringMessage>, IConsumer<DateTimeMessage>
+    class Handler : IConsumer<StringMessage>
     {
         public Task Consume(ConsumeContext<StringMessage> context)
         {
             Console.WriteLine("Got string: {0}", context.Message.Message);
-            return Task.CompletedTask;
-        }
-
-        public Task Consume(ConsumeContext<DateTimeMessage> context)
-        {
-            Console.WriteLine("Got date: {0}", context.Message.Date);
             return Task.CompletedTask;
         }
     }
